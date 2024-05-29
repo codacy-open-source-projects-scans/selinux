@@ -63,7 +63,7 @@ static int validate_array_init(const policydb_t *p, validate_t flavors[])
 		goto bad;
 	if (validate_init(&flavors[SYM_ROLES], p->p_role_val_to_name, p->p_roles.nprim))
 		goto bad;
-	if (p->policyvers < POLICYDB_VERSION_AVTAB || p->policyvers > POLICYDB_VERSION_PERMISSIVE) {
+	if (p->policy_type != POLICY_KERN || p->policyvers < POLICYDB_VERSION_AVTAB || p->policyvers > POLICYDB_VERSION_PERMISSIVE) {
 		if (validate_init(&flavors[SYM_TYPES], p->p_type_val_to_name, p->p_types.nprim))
 			goto bad;
 	} else {
@@ -803,7 +803,7 @@ static int validate_datum_array_gaps(sepol_handle_t *handle, const policydb_t *p
 	 * For policy versions between 20 and 23, attributes exist in the policy,
 	 * but only in the type_attr_map, so all gaps must be assumed to be valid.
 	 */
-	if (p->policyvers < POLICYDB_VERSION_AVTAB || p->policyvers > POLICYDB_VERSION_PERMISSIVE) {
+	if (p->policy_type != POLICY_KERN || p->policyvers < POLICYDB_VERSION_AVTAB || p->policyvers > POLICYDB_VERSION_PERMISSIVE) {
 		for (i = 0; i < p->p_types.nprim; i++) {
 			if (bool_xnor(p->type_val_to_struct[i], ebitmap_get_bit(&flavors[SYM_TYPES].gaps, i)))
 				goto bad;
@@ -1077,6 +1077,10 @@ static int validate_avrules(sepol_handle_t *handle, const avrule_t *avrule, int 
 		switch(avrule->flags) {
 		case 0:
 		case RULE_SELF:
+			if (p->policyvers != POLICY_KERN &&
+			    p->policyvers < MOD_POLICYDB_VERSION_SELF_TYPETRANS &&
+			    (avrule->specified & AVRULE_TYPE))
+				goto bad;
 			break;
 		case RULE_NOTSELF:
 			switch(avrule->specified) {
@@ -1503,8 +1507,16 @@ static int validate_filename_trans_rules(sepol_handle_t *handle, const filename_
 			goto bad;
 
 		/* currently only the RULE_SELF flag can be set */
-		if ((filename_trans->flags & ~RULE_SELF) != 0)
+		switch (filename_trans->flags) {
+		case 0:
+			break;
+		case RULE_SELF:
+			if (p->policyvers != POLICY_KERN && p->policyvers < MOD_POLICYDB_VERSION_SELF_TYPETRANS)
+				goto bad;
+			break;
+		default:
 			goto bad;
+		}
 	}
 
 	return 0;
@@ -1775,10 +1787,8 @@ int policydb_validate(sepol_handle_t *handle, const policydb_t *p)
 	if (validate_range_transitions(handle, p, flavors))
 		goto bad;
 
-	if (p->policyvers >= POLICYDB_VERSION_AVTAB) {
-		if (validate_typeattr_map(handle, p, flavors))
-			goto bad;
-	}
+	if (validate_typeattr_map(handle, p, flavors))
+		goto bad;
 
 	validate_array_destroy(flavors);
 
