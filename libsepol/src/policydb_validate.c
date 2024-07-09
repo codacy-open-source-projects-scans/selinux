@@ -1076,6 +1076,7 @@ static int validate_avrules(sepol_handle_t *handle, const avrule_t *avrule, int 
 
 		switch(avrule->flags) {
 		case 0:
+			break;
 		case RULE_SELF:
 			if (p->policyvers != POLICY_KERN &&
 			    p->policyvers < MOD_POLICYDB_VERSION_SELF_TYPETRANS &&
@@ -1467,6 +1468,8 @@ bad:
 
 static int validate_scope_index(sepol_handle_t *handle, const scope_index_t *scope_index, validate_t flavors[])
 {
+	uint32_t i;
+
 	if (!ebitmap_is_empty(&scope_index->scope[SYM_COMMONS]))
 		goto bad;
 	if (validate_ebitmap(&scope_index->p_classes_scope, &flavors[SYM_CLASSES]))
@@ -1483,8 +1486,10 @@ static int validate_scope_index(sepol_handle_t *handle, const scope_index_t *sco
 		goto bad;
 	if (validate_ebitmap(&scope_index->p_cat_scope, &flavors[SYM_CATS]))
 		goto bad;
-	if (scope_index->class_perms_len > flavors[SYM_CLASSES].nprim)
-		goto bad;
+
+	for (i = 0; i < scope_index->class_perms_len; i++)
+		if (validate_value(i + 1, &flavors[SYM_CLASSES]))
+			goto bad;
 
 	return 0;
 
