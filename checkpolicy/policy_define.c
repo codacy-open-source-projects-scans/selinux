@@ -156,9 +156,9 @@ static int id_has_dot(const char *id)
 
 int define_class(void)
 {
-	char *id = 0;
-	class_datum_t *datum = 0;
-	int ret;
+	char *id = NULL;
+	class_datum_t *datum = NULL;
+	int ret = -1;
 	uint32_t value;
 
 	if (pass == 2) {
@@ -175,26 +175,28 @@ int define_class(void)
 	datum = (class_datum_t *) malloc(sizeof(class_datum_t));
 	if (!datum) {
 		yyerror("out of memory");
-		goto bad;
+		goto cleanup;
 	}
 	memset(datum, 0, sizeof(class_datum_t));
 	ret = declare_symbol(SYM_CLASSES, id, datum, &value, &value);
 	switch (ret) {
 	case -3:{
 			yyerror("Out of memory!");
-			goto bad;
+			goto cleanup;
 		}
 	case -2:{
 			yyerror2("duplicate declaration of class %s", id);
-			goto bad;
+			goto cleanup;
 		}
 	case -1:{
 			yyerror("could not declare class here");
-			goto bad;
+			goto cleanup;
 		}
-	case 0:
-	case 1:{
+	case 0: {
 			break;
+		}
+	case 1:{
+			goto cleanup;
 		}
 	default:{
 			assert(0);	/* should never get here */
@@ -203,12 +205,10 @@ int define_class(void)
 	datum->s.value = value;
 	return 0;
 
-      bad:
-	if (id)
-		free(id);
-	if (datum)
-		free(datum);
-	return -1;
+      cleanup:
+	free(id);
+	free(datum);
+	return ret == 1 ? 0 : -1;
 }
 
 int define_permissive(void)
@@ -785,8 +785,13 @@ int define_sens(void)
 			yyerror2("could not declare sensitivity level %s here", id);
 			goto bad;
 		}
-	case 0:
+	case 0: {
+			break;
+		}
 	case 1:{
+			level_datum_destroy(datum);
+			free(datum);
+			free(id);
 			break;
 		}
 	default:{
@@ -827,8 +832,13 @@ int define_sens(void)
 				    ("could not declare sensitivity alias %s here", id);
 				goto bad_alias;
 			}
-		case 0:
+		case 0: {
+				break;
+			}
 		case 1:{
+				level_datum_destroy(aliasdatum);
+				free(aliasdatum);
+				free(id);
 				break;
 			}
 		default:{
@@ -957,15 +967,20 @@ int define_category(void)
 			yyerror2("could not declare category %s here", id);
 			goto bad;
 		}
-	case 0:
+	case 0:{
+			datum->s.value = value;
+			break;
+		}
 	case 1:{
+			cat_datum_destroy(datum);
+			free(datum);
+			free(id);
 			break;
 		}
 	default:{
 			assert(0);	/* should never get here */
 		}
 	}
-	datum->s.value = value;
 
 	while ((id = queue_remove(id_queue))) {
 		if (id_has_dot(id)) {
@@ -981,11 +996,11 @@ int define_category(void)
 		}
 		cat_datum_init(aliasdatum);
 		aliasdatum->isalias = TRUE;
-		aliasdatum->s.value = datum->s.value;
+		aliasdatum->s.value = value;
 
 		ret =
 		    declare_symbol(SYM_CATS, id, aliasdatum, NULL,
-				   &datum->s.value);
+				   &value);
 		switch (ret) {
 		case -3:{
 				yyerror("Out of memory!");
@@ -1001,8 +1016,13 @@ int define_category(void)
 				    ("could not declare category alias %s here", id);
 				goto bad_alias;
 			}
-		case 0:
+		case 0:{
+				break;
+			}
 		case 1:{
+				cat_datum_destroy(aliasdatum);
+				free(aliasdatum);
+				free(id);
 				break;
 			}
 		default:{
@@ -1302,6 +1322,7 @@ static int add_aliases_to_type(type_datum_t * type)
 				aliasdatum->primary = type->s.value;
 				aliasdatum->flavor = TYPE_ALIAS;
 
+				free(id);
 				break;
 			}
 		default:{
@@ -1833,9 +1854,11 @@ int define_bool_tunable(int is_tunable)
 			yyerror2("could not declare boolean %s here", id);
 			goto cleanup;
 		}
-	case 0:
-	case 1:{
+	case 0:{
 			break;
+		}
+	case 1:{
+			goto cleanup;
 		}
 	default:{
 			assert(0);	/* should never get here */
@@ -1854,11 +1877,13 @@ int define_bool_tunable(int is_tunable)
 	return 0;
       cleanup:
 	cond_destroy_bool(id, datum, NULL);
-	return -1;
+	return ret == 1 ? 0 : -1;
 }
 
 avrule_t *define_cond_pol_list(avrule_t * avlist, avrule_t * sl)
 {
+	avrule_t *last;
+
 	if (pass == 1) {
 		/* return something so we get through pass 1 */
 		return (avrule_t *) 1;
@@ -1869,8 +1894,12 @@ avrule_t *define_cond_pol_list(avrule_t * avlist, avrule_t * sl)
 		return avlist;
 	}
 
-	/* prepend the new avlist to the pre-existing one */
-	sl->next = avlist;
+	/* Prepend the new avlist to the pre-existing one.
+	 * An extended permission statement might consist of multiple av
+	 * rules. */
+	for (last = sl; last->next; last = last->next)
+		;
+	last->next = avlist;
 	return sl;
 }
 
@@ -1972,7 +2001,7 @@ static int avrule_read_xperm_ranges(struct av_xperm_range_list **rangehead)
 			id = queue_remove(id_queue);
 			r->range.high = (uint16_t) strtoul(id,NULL,0);
 			if (r->range.high < r->range.low) {
-				yyerror2("Ioctl range %d-%d must be in ascending order.",
+				yyerror2("extended permission range %#x-%#x must be in ascending order.",
 					 r->range.low, r->range.high);
 				return -1;
 			}
@@ -2454,9 +2483,9 @@ static int avrule_cpy(avrule_t *dest, const avrule_t *src)
 	return 0;
 }
 
-static int define_te_avtab_ioctl(const avrule_t *avrule_template)
+static int define_te_avtab_ioctl(const avrule_t *avrule_template, avrule_t **ret_avrules)
 {
-	avrule_t *avrule;
+	avrule_t *avrule, *ret = NULL, **last = &ret;
 	struct av_xperm_range_list *rangelist, *r;
 	av_extended_perms_t *complete_driver, *partial_driver, *xperms;
 	unsigned int i;
@@ -2478,7 +2507,13 @@ static int define_te_avtab_ioctl(const avrule_t *avrule_template)
 		if (avrule_cpy(avrule, avrule_template))
 			return -1;
 		avrule->xperms = complete_driver;
-		append_avrule(avrule);
+
+		if (ret_avrules) {
+			*last = avrule;
+			last = &(avrule->next);
+		} else {
+			append_avrule(avrule);
+		}
 	}
 
 	/* flag ioctl driver codes that are partially enabled */
@@ -2507,7 +2542,13 @@ static int define_te_avtab_ioctl(const avrule_t *avrule_template)
 			if (avrule_cpy(avrule, avrule_template))
 				return -1;
 			avrule->xperms = xperms;
-			append_avrule(avrule);
+
+			if (ret_avrules) {
+				*last = avrule;
+				last = &(avrule->next);
+			} else {
+				append_avrule(avrule);
+			}
 		}
 	}
 
@@ -2521,12 +2562,15 @@ done:
 		free(r);
 	}
 
+	if (ret_avrules)
+		*ret_avrules = ret;
+
 	return 0;
 }
 
-static int define_te_avtab_netlink(const avrule_t *avrule_template)
+static int define_te_avtab_netlink(const avrule_t *avrule_template, avrule_t **ret_avrules)
 {
-	avrule_t *avrule;
+	avrule_t *avrule, *ret = NULL, **last = &ret;
 	struct av_xperm_range_list *rangelist, *r;
 	av_extended_perms_t *partial_driver, *xperms;
 	unsigned int i;
@@ -2561,7 +2605,13 @@ static int define_te_avtab_netlink(const avrule_t *avrule_template)
 			if (avrule_cpy(avrule, avrule_template))
 				return -1;
 			avrule->xperms = xperms;
-			append_avrule(avrule);
+
+			if (ret_avrules) {
+				*last = avrule;
+				last = &(avrule->next);
+			} else {
+				append_avrule(avrule);
+			}
 		}
 	}
 
@@ -2575,7 +2625,62 @@ done:
 		free(r);
 	}
 
+	if (ret_avrules)
+		*ret_avrules = ret;
+
 	return 0;
+}
+
+avrule_t *define_cond_te_avtab_extended_perms(int which)
+{
+	char *id;
+	unsigned int i;
+	avrule_t *avrule_template, *rules = NULL;
+	int rc = 0;
+
+	if (policydbp->policy_type == POLICY_KERN && policydbp->policyvers < POLICYDB_VERSION_COND_XPERMS) {
+		yyerror2("extended permissions in conditional policies are only supported since policy version %d, found policy version %d",
+			POLICYDB_VERSION_COND_XPERMS, policydbp->policyvers);
+		return COND_ERR;
+	}
+	if (policydbp->policy_type != POLICY_KERN && policydbp->policyvers < MOD_POLICYDB_VERSION_COND_XPERMS) {
+		yyerror2("extended permissions in conditional policies are only supported since module policy version %d, found module policy version %d",
+			MOD_POLICYDB_VERSION_COND_XPERMS, policydbp->policyvers);
+		return COND_ERR;
+	}
+
+	if (pass == 1) {
+		for (i = 0; i < 4; i++) {
+			while ((id = queue_remove(id_queue)))
+				free(id);
+		}
+		return (avrule_t *) 1; /* any non-NULL value */
+	}
+
+	/* populate avrule template with source/target/tclass */
+	if (define_te_avtab_xperms_helper(which, &avrule_template))
+		return COND_ERR;
+
+	id = queue_remove(id_queue);
+	if (strcmp(id, "ioctl") == 0) {
+		rc = define_te_avtab_ioctl(avrule_template, &rules);
+	} else if (strcmp(id, "nlmsg") == 0) {
+		rc = define_te_avtab_netlink(avrule_template, &rules);
+	} else {
+		yyerror2("only ioctl and nlmsg extended permissions are supported, found %s", id);
+		rc = -1;
+	}
+
+	free(id);
+	avrule_destroy(avrule_template);
+	free(avrule_template);
+
+	if (rc) {
+		avrule_destroy(rules);
+		return NULL;
+	}
+
+	return rules;
 }
 
 int define_te_avtab_extended_perms(int which)
@@ -2599,11 +2704,11 @@ int define_te_avtab_extended_perms(int which)
 
 	id = queue_remove(id_queue);
 	if (strcmp(id,"ioctl") == 0) {
-		rc = define_te_avtab_ioctl(avrule_template);
+		rc = define_te_avtab_ioctl(avrule_template, NULL);
 	} else if (strcmp(id,"nlmsg") == 0) {
-		rc = define_te_avtab_netlink(avrule_template);
+		rc = define_te_avtab_netlink(avrule_template, NULL);
 	} else {
-		yyerror2("only ioctl extended permissions are supported, found %s", id);
+		yyerror2("only ioctl and nlmsg extended permissions are supported, found %s", id);
 		rc = -1;
 	}
 
@@ -4231,6 +4336,50 @@ static int parse_categories(char *id, level_datum_t * levdatum, ebitmap_t * cats
 	return 0;
 }
 
+static int mls_semantic_cats_merge(mls_semantic_cat_t ** dst,
+								   const mls_semantic_cat_t * src)
+{
+	mls_semantic_cat_t *new;
+
+	while (src) {
+		new = (mls_semantic_cat_t *) malloc(sizeof(mls_semantic_cat_t));
+		if (!new)
+			return -1;
+
+		mls_semantic_cat_init(new);
+		new->low = src->low;
+		new->high = src->high;
+		new->next = *dst;
+		*dst = new;
+
+		src = src->next;
+	}
+
+	return 0;
+}
+
+static int mls_add_or_check_level(mls_semantic_level_t *dst, const mls_semantic_level_t *src)
+{
+	if (!dst->sens) {
+		if (mls_semantic_level_cpy(dst, src) < 0) {
+			yyerror("out of memory");
+			return -1;
+		}
+	} else {
+		if (dst->sens != src->sens) {
+			return -1;
+		}
+		/* Duplicate cats won't cause problems, but different cats will
+		 * result in an error during expansion */
+		if (mls_semantic_cats_merge(&dst->cat, src->cat) < 0) {
+			yyerror("out of memory");
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 static int parse_semantic_categories(char *id, level_datum_t * levdatum __attribute__ ((unused)),
 				     mls_semantic_cat_t ** cats)
 {
@@ -4289,7 +4438,7 @@ static int parse_semantic_categories(char *id, level_datum_t * levdatum __attrib
 int define_user(void)
 {
 	char *id;
-	user_datum_t *usrdatum;
+	user_datum_t *usrdatum, *usr_global;
 	level_datum_t *levdatum;
 	int l;
 
@@ -4314,9 +4463,15 @@ int define_user(void)
 		return 0;
 	}
 
+	id = strdup(queue_head(id_queue));
+
 	if ((usrdatum = declare_user()) == NULL) {
+		free(id);
 		return -1;
 	}
+
+	usr_global = hashtab_search(policydbp->p_users.table, (hashtab_key_t) id);
+	free(id);
 
 	while ((id = queue_remove(id_queue))) {
 		if (set_user_roles(&usrdatum->roles, id))
@@ -4344,6 +4499,7 @@ int define_user(void)
 		usrdatum->dfltlevel.sens = levdatum->level->sens;
 
 		while ((id = queue_remove(id_queue))) {
+			/* This will add to any already existing categories */
 			if (parse_semantic_categories(id, levdatum,
 			                            &usrdatum->dfltlevel.cat)) {
 				free(id);
@@ -4369,6 +4525,7 @@ int define_user(void)
 			usrdatum->range.level[l].sens = levdatum->level->sens;
 
 			while ((id = queue_remove(id_queue))) {
+				/* This will add to any already existing categories */
 				if (parse_semantic_categories(id, levdatum,
 				               &usrdatum->range.level[l].cat)) {
 					free(id);
@@ -4386,6 +4543,24 @@ int define_user(void)
 			if (mls_semantic_level_cpy(&usrdatum->range.level[1],
 			                           &usrdatum->range.level[0])) {
 				yyerror("out of memory");
+				return -1;
+			}
+		}
+
+		if (usr_global && usr_global != usrdatum) {
+			if (mls_add_or_check_level(&usr_global->dfltlevel,
+									   &usrdatum->dfltlevel)) {
+				yyerror("Problem with user default level");
+				return -1;
+			}
+			if (mls_add_or_check_level(&usr_global->range.level[0],
+									   &usrdatum->range.level[0])) {
+				yyerror("Problem with user low level");
+				return -1;
+			}
+			if (mls_add_or_check_level(&usr_global->range.level[1],
+									   &usrdatum->range.level[1])) {
+				yyerror("Problem with user high level");
 				return -1;
 			}
 		}
@@ -5534,6 +5709,14 @@ static void ipv6_cidr_bits_to_mask(unsigned long cidr_bits, struct in6_addr *mas
 	}
 }
 
+static void ipv6_apply_mask(struct in6_addr *restrict addr, const struct in6_addr *restrict mask)
+{
+	unsigned i;
+
+	for (i = 0; i < 4; i++)
+		addr->s6_addr32[i] &= mask->s6_addr32[i];
+}
+
 static int insert_ipv6_node(ocontext_t *newc)
 {
 	ocontext_t *c, *l;
@@ -5709,6 +5892,7 @@ int define_ipv6_cidr_node_context(void)
 		return -1;
 	}
 
+	ipv6_apply_mask(&addr, &mask);
 	memcpy(&newc->u.node6.addr[0], &addr.s6_addr[0], 16);
 	memcpy(&newc->u.node6.mask[0], &mask.s6_addr[0], 16);
 

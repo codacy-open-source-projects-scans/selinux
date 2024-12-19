@@ -438,7 +438,7 @@ int get_ordered_context_list(const char *user,
 		__fsetlocking(fp, FSETLOCKING_BYCALLER);
 		rc = get_context_user(fp, con, user, &reachable, &nreachable);
 
-		fclose(fp);
+		fclose_errno_safe(fp);
 		if (rc < 0 && errno != ENOENT) {
 			selinux_log(SELINUX_ERROR,
 				"%s:  error in processing configuration file %s\n",
@@ -451,7 +451,7 @@ int get_ordered_context_list(const char *user,
 	if (fp) {
 		__fsetlocking(fp, FSETLOCKING_BYCALLER);
 		rc = get_context_user(fp, con, user, &reachable, &nreachable);
-		fclose(fp);
+		fclose_errno_safe(fp);
 		if (rc < 0 && errno != ENOENT) {
 			selinux_log(SELINUX_ERROR,
 				"%s:  error in processing configuration file %s\n",
@@ -481,12 +481,11 @@ int get_ordered_context_list(const char *user,
 	   the "failsafe" context to at least permit root login
 	   for emergency recovery if possible. */
 	freeconary(reachable);
-	reachable = malloc(2 * sizeof(char *));
+	reachable = calloc(2, sizeof(char *));
 	if (!reachable) {
 		rc = -1;
 		goto out;
 	}
-	reachable[0] = reachable[1] = 0;
 	rc = get_failsafe_context(user, &reachable[0]);
 	if (rc < 0) {
 		freeconary(reachable);

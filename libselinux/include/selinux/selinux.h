@@ -1,8 +1,10 @@
 #ifndef _SELINUX_H_
 #define _SELINUX_H_
 
+#include <stdint.h>
 #include <sys/types.h>
 #include <stdarg.h>
+#include <asm/bitsperlong.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -263,9 +265,15 @@ extern int security_compute_member_raw(const char * scon,
  * These interfaces are deprecated.  Use get_ordered_context_list() or
  * one of its variant interfaces instead.
  */
+#ifdef __GNUC__
+__attribute__ ((deprecated))
+#endif
 extern int security_compute_user(const char * scon,
 				 const char *username,
 				 char *** con);
+#ifdef __GNUC__
+__attribute__ ((deprecated))
+#endif
 extern int security_compute_user_raw(const char * scon,
 				     const char *username,
 				     char *** con);
@@ -529,6 +537,9 @@ extern int matchpathcon_index(const char *path,
    with the same inode (e.g. due to multiple hard links).  If so, then
    use the latter of the two specifications based on their order in the 
    file contexts configuration.  Return the used specification index. */
+#if defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS == 64 && __BITS_PER_LONG < 64
+#define matchpathcon_filespec_add matchpathcon_filespec_add64
+#endif
 extern int matchpathcon_filespec_add(ino_t ino, int specind, const char *file);
 
 /* Destroy any inode associations that have been added, e.g. to restart
