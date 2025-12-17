@@ -747,21 +747,172 @@ static int alias_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 	return 0;
 }
 
-static int role_remap_dominates(hashtab_key_t key __attribute__ ((unused)), hashtab_datum_t datum, void *data)
+static int role_dominates_copy_callback(hashtab_key_t key __attribute__ ((unused)), hashtab_datum_t datum, void *data)
 {
-	ebitmap_t mapped_roles;
-	role_datum_t *role = (role_datum_t *) datum;
-	expand_state_t *state = (expand_state_t *) data;
+	char *id;
+	role_datum_t *role, *new_role;
+	expand_state_t *state;
+	ebitmap_t mapped;
 
-	if (map_ebitmap(&role->dominates, &mapped_roles, state->rolemap))
+	id = (char *)key;
+	role = (role_datum_t *) datum;
+	state = (expand_state_t *) data;
+
+	if (!is_id_enabled(id, state->base, SYM_ROLES)) {
+		/* identifier's scope is not enabled */
+		return 0;
+	}
+
+	if (state->verbose)
+		INFO(state->handle, "Copying role dominates %s", id);
+
+	new_role = (role_datum_t *) hashtab_search(state->out->p_roles.table, id);
+	if (!new_role) {
+		ERR(state->handle, "Role lookup failed for %s", id);
 		return -1;
+	}
 
-	ebitmap_destroy(&role->dominates);	
-	
-	if (ebitmap_cpy(&role->dominates, &mapped_roles))
+	if (map_ebitmap(&role->dominates, &mapped, state->rolemap))
 		return -1;
+	if (ebitmap_union(&new_role->dominates, &mapped))
+		return -1;
+	ebitmap_destroy(&mapped);
 
-	ebitmap_destroy(&mapped_roles);
+	return 0;
+}
+
+static int role_types_copy_callback(hashtab_key_t key, hashtab_datum_t datum, void *data)
+{
+	char *id;
+	role_datum_t *role, *new_role;
+	expand_state_t *state;
+	ebitmap_t tmp_union_types;
+
+	id = key;
+	role = (role_datum_t *) datum;
+	state = (expand_state_t *)data;
+
+	if (!is_id_enabled(id, state->base, SYM_ROLES)) {
+		/* identifier's scope is not enabled */
+		return 0;
+	}
+
+	if (state->verbose)
+		INFO(state->handle, "copying types for role %s", id);
+
+	new_role = (role_datum_t *)hashtab_search(state->out->p_roles.table, id);
+	if (!new_role) {
+		ERR(state->handle, "Could not find role %s", id);
+		return -1;
+	}
+
+	/* convert types in the role datum in the global symtab */
+	ebitmap_init(&tmp_union_types);
+	if (expand_convert_type_set
+	    (state->out, state->typemap, &role->types, &tmp_union_types, 1)) {
+		ebitmap_destroy(&tmp_union_types);
+		ERR(state->handle, "Out of memory!");
+		return -1;
+	}
+	if (ebitmap_union(&new_role->types.types, &tmp_union_types)) {
+		ERR(state->handle, "Out of memory!");
+		ebitmap_destroy(&tmp_union_types);
+		return -1;
+	}
+	ebitmap_destroy(&tmp_union_types);
+
+	return 0;
+}
+
+static int role_roles_copy_callback(hashtab_key_t key, hashtab_datum_t datum, void *data)
+{
+	char *id;
+	role_datum_t *role, *new_role;
+	expand_state_t *state;
+	ebitmap_t mapped;
+
+	id = key;
+	role = (role_datum_t *) datum;
+	state = (expand_state_t *)data;
+
+	if (role->flavor != ROLE_ATTRIB) {
+		return 0;
+	}
+
+	if (!is_id_enabled(id, state->base, SYM_ROLES)) {
+		/* identifier's scope is not enabled */
+		return 0;
+	}
+
+	if (state->verbose)
+		INFO(state->handle, "copying roles for role %s", id);
+
+	new_role = (role_datum_t *)hashtab_search(state->out->p_roles.table, id);
+	if (!new_role) {
+		ERR(state->handle, "Could not find role %s", id);
+		return -1;
+	}
+
+	/* convert roles in the role datum in the global symtab */
+	if (map_ebitmap(&role->roles, &mapped, state->rolemap))
+		return -1;
+	if (ebitmap_union(&new_role->roles, &mapped)) {
+		ERR(state->handle, "Out of memory!");
+		ebitmap_destroy(&mapped);
+		return -1;
+	}
+	ebitmap_destroy(&mapped);
+
+	return 0;
+}
+static int expand_role_attributes_in_attributes(sepol_handle_t *handle, policydb_t *p)
+{
+	ebitmap_t attrs, roles;
+	ebitmap_node_t *ni, *nj;
+	unsigned int i, j, reps = 0, done = 0;
+	role_datum_t *rd, *ad;
+
+	ebitmap_init(&attrs);
+	for (i=0; i < p->p_roles.nprim; i++) {
+		rd = p->role_val_to_struct[i];
+		if (rd->flavor == ROLE_ATTRIB) {
+			ebitmap_set_bit(&attrs, i, 1);
+		}
+	}
+
+	while (!done && reps < p->p_roles.nprim) {
+		done = 1;
+		reps++;
+		ebitmap_for_each_positive_bit(&attrs, ni, i) {
+			rd = p->role_val_to_struct[i];
+			if (ebitmap_match_any(&rd->roles, &attrs)) {
+				done = 0;
+				if (ebitmap_get_bit(&rd->roles, i)) {
+					ERR(handle, "Before: attr has own bit set: %d\n", i);
+				}
+				ebitmap_init(&roles);
+				ebitmap_for_each_positive_bit(&rd->roles, nj, j) {
+					if (ebitmap_get_bit(&attrs, j)) {
+						ad = p->role_val_to_struct[j];
+						ebitmap_union(&roles, &ad->roles);
+						ebitmap_set_bit(&rd->roles, j, 0);
+					}
+				}
+				ebitmap_union(&rd->roles, &roles);
+				ebitmap_destroy(&roles);
+				if (ebitmap_get_bit(&rd->roles, i)) {
+					ERR(handle, "After: attr has own bit set: %d\n", i);
+					done = 1; /* Just end early */
+				}
+			}
+		}
+	}
+
+	if (reps >= p->p_roles.nprim) {
+		ERR(handle, "Had to bail: reps = %u\n", reps);
+	}
+
+	ebitmap_destroy(&attrs);
 
 	return 0;
 }
@@ -774,60 +925,26 @@ static int role_remap_dominates(hashtab_key_t key __attribute__ ((unused)), hash
 static int role_fix_callback(hashtab_key_t key, hashtab_datum_t datum,
 			     void *data)
 {
-	char *id, *base_reg_role_id;
-	role_datum_t *role, *new_role, *regular_role;
+	char *id;
+	role_datum_t *attr, *role;
 	expand_state_t *state;
 	ebitmap_node_t *rnode;
 	unsigned int i;
-	ebitmap_t mapped_roles;
 
 	id = key;
-	role = (role_datum_t *)datum;
+	attr = (role_datum_t *)datum;
 	state = (expand_state_t *)data;
 
-	if (strcmp(id, OBJECT_R) == 0) {
-		/* object_r is never a role attribute by far */
-		return 0;
-	}
-
-	if (!is_id_enabled(id, state->base, SYM_ROLES)) {
-		/* identifier's scope is not enabled */
-		return 0;
-	}
-
-	if (role->flavor != ROLE_ATTRIB)
+	if (attr->flavor != ROLE_ATTRIB)
 		return 0;
 
 	if (state->verbose)
 		INFO(state->handle, "fixing role attribute %s", id);
 
-	new_role =
-		(role_datum_t *)hashtab_search(state->out->p_roles.table, id);
-
-	assert(new_role != NULL && new_role->flavor == ROLE_ATTRIB);
-
-	ebitmap_init(&mapped_roles);
-	if (map_ebitmap(&role->roles, &mapped_roles, state->rolemap))
-		return -1;
-	if (ebitmap_union(&new_role->roles, &mapped_roles)) {
-		ERR(state->handle, "Out of memory!");
-		ebitmap_destroy(&mapped_roles);
-		return -1;
-	}
-	ebitmap_destroy(&mapped_roles);
-
-	ebitmap_for_each_positive_bit(&role->roles, rnode, i) {
-		/* take advantage of sym_val_to_name[]
-		 * of the base module */
-		base_reg_role_id = state->base->p_role_val_to_name[i];
-		regular_role = (role_datum_t *)hashtab_search(
-					state->out->p_roles.table,
-					base_reg_role_id);
-		assert(regular_role != NULL &&
-		       regular_role->flavor == ROLE_ROLE);
-
-		if (ebitmap_union(&regular_role->types.types,
-				  &new_role->types.types)) {
+	ebitmap_for_each_positive_bit(&attr->roles, rnode, i) {
+		role = state->out->role_val_to_struct[i];
+		assert(role != NULL && role->flavor == ROLE_ROLE);
+		if (ebitmap_union(&role->types.types, &attr->types.types)) {
 			ERR(state->handle, "Out of memory!");
 			return -1;
 		}
@@ -841,10 +958,8 @@ static int role_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 {
 	int ret;
 	char *id, *new_id;
-	role_datum_t *role;
-	role_datum_t *new_role;
+	role_datum_t *role, *new_role;
 	expand_state_t *state;
-	ebitmap_t tmp_union_types;
 
 	id = key;
 	role = (role_datum_t *) datum;
@@ -864,8 +979,7 @@ static int role_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 	if (state->verbose)
 		INFO(state->handle, "copying role %s", id);
 
-	new_role =
-	    (role_datum_t *) hashtab_search(state->out->p_roles.table, id);
+	new_role = (role_datum_t *) hashtab_search(state->out->p_roles.table, id);
 	if (!new_role) {
 		new_role = (role_datum_t *) malloc(sizeof(role_datum_t));
 		if (!new_role) {
@@ -896,31 +1010,6 @@ static int role_copy_callback(hashtab_key_t key, hashtab_datum_t datum,
 			return -1;
 		}
 	}
-
-	/* The dominates bitmap is going to be wrong for the moment, 
- 	 * we'll come back later and remap them, after we are sure all 
- 	 * the roles have been added */
-	if (ebitmap_union(&new_role->dominates, &role->dominates)) {
-		ERR(state->handle, "Out of memory!");
-		return -1;
-	}
-
-	ebitmap_init(&tmp_union_types);
-
-	/* convert types in the role datum in the global symtab */
-	if (expand_convert_type_set
-	    (state->out, state->typemap, &role->types, &tmp_union_types, 1)) {
-		ebitmap_destroy(&tmp_union_types);
-		ERR(state->handle, "Out of memory!");
-		return -1;
-	}
-
-	if (ebitmap_union(&new_role->types.types, &tmp_union_types)) {
-		ERR(state->handle, "Out of memory!");
-		ebitmap_destroy(&tmp_union_types);
-		return -1;
-	}
-	ebitmap_destroy(&tmp_union_types);
 
 	return 0;
 }
@@ -2464,7 +2553,7 @@ int expand_rule(sepol_handle_t * handle,
  * the regular role belongs to could be properly handled by
  * copy_role_trans and copy_role_allow.
  */
-int role_set_expand(role_set_t * x, ebitmap_t * r, policydb_t * out, policydb_t * base, uint32_t * rolemap)
+int role_set_expand(role_set_t * x, ebitmap_t * r, policydb_t * out, __attribute__ ((unused)) policydb_t * base, uint32_t * rolemap)
 {
 	unsigned int i;
 	ebitmap_node_t *rnode;
@@ -2485,29 +2574,25 @@ int role_set_expand(role_set_t * x, ebitmap_t * r, policydb_t * out, policydb_t 
 	ebitmap_init(&roles);
 	
 	if (rolemap) {
-		assert(base != NULL);
-		ebitmap_for_each_positive_bit(&x->roles, rnode, i) {
-			/* take advantage of p_role_val_to_struct[]
-			 * of the base module */
-			role = base->role_val_to_struct[i];
+		if (map_ebitmap(&x->roles, &mapped_roles, rolemap))
+			goto bad;
+		ebitmap_for_each_positive_bit(&mapped_roles, rnode, i) {
+			role = out->role_val_to_struct[i];
 			assert(role != NULL);
 			if (role->flavor == ROLE_ATTRIB) {
-				if (ebitmap_union(&roles,
-						  &role->roles))
+				if (ebitmap_union(&roles, &role->roles))
 					goto bad;
 			} else {
 				if (ebitmap_set_bit(&roles, i, 1))
 					goto bad;
 			}
 		}
-		if (map_ebitmap(&roles, &mapped_roles, rolemap))
-			goto bad;
 	} else {
-		if (ebitmap_cpy(&mapped_roles, &x->roles))
+		if (ebitmap_cpy(&roles, &x->roles))
 			goto bad;
 	}
 
-	ebitmap_for_each_positive_bit(&mapped_roles, rnode, i) {
+	ebitmap_for_each_positive_bit(&roles, rnode, i) {
 		if (ebitmap_set_bit(r, i, 1))
 			goto bad;
 	}
@@ -3055,14 +3140,26 @@ int expand_module(sepol_handle_t * handle,
 	/* order is important - types must be first */
 
 	/* copy types */
-	if (hashtab_map(state.base->p_types.table, type_copy_callback, &state)) {
+	if (hashtab_map(state.base->p_types.table, type_copy_callback, &state))
 		goto cleanup;
-	}
-
-	/* convert attribute type sets */
-	if (hashtab_map
-	    (state.base->p_types.table, attr_convert_callback, &state)) {
+	/* Needed for processing aliases */
+	if (policydb_index_others(handle, out, verbose))
 		goto cleanup;
+	if (hashtab_map(state.base->p_types.table, alias_copy_callback, &state))
+		goto cleanup;
+	if (hashtab_map(state.base->p_types.table, type_bounds_copy_callback, &state))
+		goto cleanup;
+	if (hashtab_map(state.base->p_types.table, attr_convert_callback, &state))
+		goto cleanup;
+	for (curblock = state.base->global; curblock != NULL;
+	     curblock = curblock->next) {
+		avrule_decl_t *decl = curblock->enabled;
+		if (decl == NULL)
+			continue;
+		if (hashtab_map(decl->p_types.table, attr_convert_callback, &state))
+			goto cleanup;
+		if (hashtab_map(decl->p_types.table, type_bounds_copy_callback, &state))
+			goto cleanup;
 	}
 
 	/* copy commons */
@@ -3078,16 +3175,7 @@ int expand_module(sepol_handle_t * handle,
 		goto cleanup;
 	}
 
-	/* copy type bounds */
-	if (hashtab_map(state.base->p_types.table,
-			type_bounds_copy_callback, &state))
-		goto cleanup;
-
-	/* copy aliases */
-	if (hashtab_map(state.base->p_types.table, alias_copy_callback, &state))
-		goto cleanup;
-
-	/* index here so that type indexes are available for role_copy_callback */
+	/* index here so that type indexes are available for role_types_copy_callback */
 	if (policydb_index_others(handle, out, verbose)) {
 		ERR(handle, "Error while indexing out symbols");
 		goto cleanup;
@@ -3096,8 +3184,47 @@ int expand_module(sepol_handle_t * handle,
 	/* copy roles */
 	if (hashtab_map(state.base->p_roles.table, role_copy_callback, &state))
 		goto cleanup;
-	if (hashtab_map(state.base->p_roles.table,
-			role_bounds_copy_callback, &state))
+	/* Needed for evaluating role attributes and the types for each role */
+	if (policydb_index_others(handle, out, verbose))
+		goto cleanup;
+	if (hashtab_map(state.base->p_roles.table, role_bounds_copy_callback, &state))
+		goto cleanup;
+	if (hashtab_map(state.base->p_roles.table, role_dominates_copy_callback, &state))
+		goto cleanup;
+	if (hashtab_map(state.base->p_roles.table, role_types_copy_callback, &state))
+		goto cleanup;
+	if (hashtab_map(state.base->p_roles.table, role_roles_copy_callback, &state))
+		goto cleanup;
+	for (curblock = state.base->global; curblock != NULL;
+	     curblock = curblock->next) {
+		avrule_decl_t *decl = curblock->enabled;
+		if (decl == NULL)
+			continue;
+		if (hashtab_map(decl->p_roles.table, role_bounds_copy_callback, &state))
+			goto cleanup;
+		if (hashtab_map(decl->p_roles.table, role_dominates_copy_callback, &state))
+			goto cleanup;
+		if (hashtab_map(decl->p_roles.table, role_types_copy_callback, &state))
+			goto cleanup;
+		if (hashtab_map(decl->p_roles.table, role_roles_copy_callback, &state))
+			goto cleanup;
+	}
+	/* Expand any role attributes found in the roles ebitmap of each role attribute */
+	if (expand_role_attributes_in_attributes(state.handle, state.out)) {
+		goto cleanup;
+	}
+	/* When compiling a base module, the base module is linked and expanded (to
+	 * verify that it could be done) and the resulting kernel module is discarded.
+	 * But the base module is changed while linking because role attributes are
+	 * expanded while linking instead of being expanded when expanding.
+	 * To duplicate that behavior, expand the base module role attributes.
+	 */
+	if (expand_role_attributes_in_attributes(state.handle, state.base)) {
+		goto cleanup;
+	}
+
+	/* Copy types in role attribute to all roles that belongs to it */
+	if (hashtab_map(state.out->p_roles.table, role_fix_callback, &state))
 		goto cleanup;
 
 	/* copy MLS's sensitivity level and categories - this needs to be done
@@ -3114,9 +3241,18 @@ int expand_module(sepol_handle_t * handle,
 	/* copy users */
 	if (hashtab_map(state.base->p_users.table, user_copy_callback, &state))
 		goto cleanup;
-	if (hashtab_map(state.base->p_users.table,
-			user_bounds_copy_callback, &state))
+	if (hashtab_map(state.base->p_users.table, user_bounds_copy_callback, &state))
 		goto cleanup;
+	for (curblock = state.base->global; curblock != NULL;
+	     curblock = curblock->next) {
+		avrule_decl_t *decl = curblock->enabled;
+		if (decl == NULL)
+			continue;
+		if (hashtab_map(decl->p_users.table, user_copy_callback, &state))
+			goto cleanup;
+		if (hashtab_map(decl->p_users.table, user_bounds_copy_callback, &state))
+			goto cleanup;
+	}
 
 	/* copy bools */
 	if (hashtab_map(state.base->p_bools.table, bool_copy_callback, &state))
@@ -3130,44 +3266,6 @@ int expand_module(sepol_handle_t * handle,
 		ERR(handle, "Error while indexing out symbols");
 		goto cleanup;
 	}
-
-	/* loop through all decls and union attributes, roles, users */
-	for (curblock = state.base->global; curblock != NULL;
-	     curblock = curblock->next) {
-		avrule_decl_t *decl = curblock->enabled;
-
-		if (decl == NULL) {
-			/* nothing was enabled within this block */
-			continue;
-		}
-
-		/* convert attribute type sets */
-		if (hashtab_map
-		    (decl->p_types.table, attr_convert_callback, &state)) {
-			goto cleanup;
-		}
-
-		/* copy roles */
-		if (hashtab_map
-		    (decl->p_roles.table, role_copy_callback, &state))
-			goto cleanup;
-
-		/* copy users */
-		if (hashtab_map
-		    (decl->p_users.table, user_copy_callback, &state))
-			goto cleanup;
-
-	}
-
-	/* remap role dominates bitmaps */
-	 if (hashtab_map(state.out->p_roles.table, role_remap_dominates, &state)) {
-		goto cleanup;
-	}
-
-	/* escalate the type_set_t in a role attribute to all regular roles
-	 * that belongs to it. */
-	if (hashtab_map(state.base->p_roles.table, role_fix_callback, &state))
-		goto cleanup;
 
 	if (copy_and_expand_avrule_block(&state) < 0) {
 		ERR(handle, "Error during expand");
