@@ -520,6 +520,9 @@ static int semantic_level_to_cil(struct policydb *pdb, struct mls_semantic_level
 {
 	struct mls_semantic_cat *cat;
 
+	if (level->sens == 0)
+		return -1;
+
 	cil_printf("(%s ", pdb->p_sens_val_to_name[level->sens - 1]);
 
 	if (level->cat != NULL) {
@@ -2329,12 +2332,20 @@ static int user_to_cil(int indent, struct policydb *pdb, struct avrule_block *UN
 	struct ebitmap_node *node;
 	uint32_t i;
 
-	if (scope == SCOPE_DECL) {
-		cil_println(indent, "(user %s)", key);
-		// object_r is implicit in checkmodule, but not with CIL, create it
-		// as part of base
-		cil_println(indent, "(userrole %s " DEFAULT_OBJECT ")", key);
+	if (scope == SCOPE_REQ) {
+		// if a user is in the REQ scope, then it could cause an
+		// optional block to fail, even if it is never used. However in CIL,
+		// symbols must be used in order to cause an optional block to fail. So
+		// for symbols in the REQ scope, add them to a userattribute as a way
+		// to 'use' them in the optional without affecting the resulting policy.
+		cil_println(indent, "(userattributeset " GEN_REQUIRE_ATTR " %s)", key);
+		return 0;
 	}
+
+	cil_println(indent, "(user %s)", key);
+	// object_r is implicit in checkmodule, but not with CIL, create it
+	// as part of base
+	cil_println(indent, "(userrole %s " DEFAULT_OBJECT ")", key);
 
 	ebitmap_for_each_positive_bit(&roles, node, i) {
 		cil_println(indent, "(userrole %s %s)", key, pdb->p_role_val_to_name[i]);
@@ -2498,6 +2509,9 @@ exit:
 static int level_to_cil(struct policydb *pdb, struct mls_level *level)
 {
 	struct ebitmap *map = &level->cat;
+
+	if (level->sens == 0)
+		return -1;
 
 	cil_printf("(%s", pdb->p_sens_val_to_name[level->sens - 1]);
 
