@@ -70,6 +70,11 @@ SWIGRUBY = swig -Wall -ruby -o $(SWIGRUBYCOUT) -outdir ./
 all: $(LIBA) $(LIBPC)
 ifneq ($(DISABLE_SHARED),y)
 all: $(LIBSO)
+$(SWIGSO): $(LIBSO)
+$(SWIGRUBYSO): $(LIBSO)
+else
+$(SWIGSO): $(LIBA)
+$(SWIGRUBYSO): $(LIBA)
 endif
 
 pywrap: all $(SWIGSO)
@@ -86,7 +91,7 @@ $(SWIGSO): $(SWIGLOBJ)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -L. -fPIC -shared -o $@ $< -lsemanage $(PYLIBS)
 
 $(SWIGRUBYSO): $(SWIGRUBYLOBJ)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -L. -fPIC -shared -o $@ $^ -lsemanage $(RUBYLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -L. -fPIC -shared -o $@ $< -lsemanage $(RUBYLIBS)
 
 $(LIBA): $(OBJS)
 	$(AR) rcs $@ $^
