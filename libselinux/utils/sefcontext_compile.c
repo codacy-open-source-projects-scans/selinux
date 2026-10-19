@@ -524,7 +524,7 @@ err:
 static __attribute__((__noreturn__)) void usage(const char *progname)
 {
 	fprintf(stderr,
-		"usage: %s [-iV] [-o out_file] [-p policy_file] fc_file\n"
+		"usage: %s [-riV] [-o out_file] [-p policy_file] fc_file\n"
 		"Where:\n\t"
 		"-o       Optional file name of the PCRE formatted binary\n\t"
 		"         file to be output. If not specified the default\n\t"
@@ -537,7 +537,7 @@ static __attribute__((__noreturn__)) void usage(const char *progname)
 		"         if you know that you build for an incompatible\n\t"
 		"         architecture to save space. When linked against\n\t"
 		"         PCRE1 this flag is ignored.)\n\t"
-		"-i       Print regular expression info end exit. That is, back\n\t"
+		"-i       Print regular expression info and exit. That is, back\n\t"
 		"         end version and architecture identifier.\n\t"
 		"         Arch identifier format (PCRE2):\n\t"
 		"         <pointer width>-<size type width>-<endianness>, e.g.,\n\t"
